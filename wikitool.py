@@ -4,10 +4,11 @@ import time
 import concurrent.futures
 import os
 from multiprocessing import Process
+from neo4j import GraphDatabase
 
 dump_file = "dump.xml.bz2"
 max_count = -1
-max_thread = 64
+max_thread = 8
 
 # threadpool
 pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_thread)
@@ -17,8 +18,24 @@ file_chunks = {}
 # load file
 infile = open(dump_file, "rb")
 
+def create_node_tx(tx, name, sub_pages, is_redirect):
+    query = ("MERGE (p:Page { slug: $name }) "
+                 "ON CREATE SET p.isRedirect = $is_redirect "
+                 "ON MATCH SET p.isRedirect = $is_redirect")
+    result = tx.run(query, name=name, is_redirect=is_redirect)
+    for sub_page in sub_pages:
+        sub_query = ("MERGE (outPage:Page { slug: $sub_page }) "
+                    "WITH outPage "
+                    "MATCH (page:Page { slug: $name }) "
+                    "MERGE (page)-[rel:LINKS_TO]->(outPage)")
+        tx.run(sub_query, name=name, sub_page=sub_page)
+    record = result.single()
+
+db = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "testpassword",), max_connection_pool_size=64, max_transaction_retry_time=9999999)
+
 # queue a chunk of the index
 def queue_index_chunk(file_name):
+    db.verify_connectivity()
     print('Reading index chunk '+file_name)
     with open(file_name, 'r') as file:
         Lines = file.readlines()
@@ -118,12 +135,18 @@ def get_linked_articles(text):
     return links
 
 # Process a given page
-def process_page(offset, page_id, title):
-    page_text = get_wikitext(int(offset), page_id=int(page_id))
+def process_page(uncompressed_data, page_id, title):
+    page_text = get_wikitext(uncompressed_data, page_id=int(page_id))
     if page_text is None:
         raise Exception('Unable to resolve page text for: ' + title)
     is_redirect = page_text.startswith("#REDIRECT")
     page_links = get_linked_articles(page_text)
+    global db
+    with db.session(database='wikilinks') as session:
+        try:
+            node_id = session.execute_write(create_node_tx, title, page_links, is_redirect)
+        except Exception as e:
+            print(e)
     # TODO, do something with this data
     
 # Print thread info
