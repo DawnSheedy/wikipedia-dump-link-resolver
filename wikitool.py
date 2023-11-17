@@ -137,5 +137,7 @@ def info(title):
 if __name__ == '__main__':
     info('Main Thread')
     for file in os.listdir('index'):
+        if (file == '.DS_Store'):
+            continue
         process = Process(target=queue_index_chunk, args=('index/'+file,))
         process.start()
